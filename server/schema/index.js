@@ -1,37 +1,5 @@
 const {gql, makeExecutableSchema, PubSub} = require('apollo-server')
-
-let tasks = [
-    {
-        title: 'очень важная задача',
-        id: '1600699355009',
-        isCompleted: false,
-    },
-    {
-        title: 'blabla',
-        id: '1600699198271',
-        isCompleted: false,
-    },
-]
-
-const setResponse = type => {
-    switch (type) {
-        case 'ERROR': {
-            return {
-                code: 500,
-                success: false,
-                message: 'Something get wrong, try again later',
-                tasks: [],
-            }
-        }
-        default: {
-            return {
-                code: 200,
-                success: true,
-                tasks,
-            }
-        }
-    }
-}
+const Task = require('../models/task')
 
 const pubsub = new PubSub()
 const TASK_ADDED = 'TASK_ADDED'
@@ -61,7 +29,7 @@ const typeDefs = gql`
         code: String!
         success: Boolean!
         message: String
-        tasks: [Task]
+        task: Task
     }
     type Query {
         tasks: [Task]!
@@ -69,7 +37,7 @@ const typeDefs = gql`
     }
     type Mutation {
         addTask(title: String!): TasksUpdateResponse!
-        editTask(updTask: TaskInput): TasksUpdateResponse!
+        editTask(task: TaskInput): TasksUpdateResponse!
         deleteTask(id: ID!): TasksUpdateResponse!
     }
     type Subscription {
@@ -80,54 +48,48 @@ const typeDefs = gql`
 const resolvers = {
     Query: {
         tasks() {
-            return tasks
+            return Task.find()
         },
         task(_, args) {
-            return tasks.find(task => task.id === args.id)
+            return Task.findById(args.id)
         },
     },
     Mutation: {
-        addTask(_, {title}) {
+        async addTask(_, {title}) {
             try {
-                const newTask = {
+                const newTask = new Task({
                     title,
                     isCompleted: false,
                     isPinned: false,
                     hasSnooze: false,
-                    id: Date.now().toString(),
-                }
-                tasks.push(newTask)
+                })
+                await newTask.save()
+
                 pubsub.publish(TASK_ADDED, {taskChanged: newTask})
-                return setResponse()
+                return setResponse('SUCCESS', newTask)
             } catch (err) {
                 return setResponse('ERROR')
             }
         },
-        editTask(_, {updTask}) {
+        async editTask(_, {task: {id, ...updates}}) {
             try {
-                const taskIdx = tasks.findIndex(task => task.id === updTask.id)
-                const updatedTask = {...tasks[taskIdx], ...updTask}
-                tasks = [
-                    ...tasks.slice(0, taskIdx),
-                    updatedTask,
-                    ...tasks.slice(taskIdx + 1),
-                ]
+                const updTask = await Task.findByIdAndUpdate(
+                    id,
+                    {$set: updates},
+                    {new: true}
+                )
                 pubsub.publish(TASK_EDIT, {
-                    taskChanged: updatedTask,
+                    taskChanged: updTask,
                 })
-                return setResponse()
+                return setResponse('SUCCESS', updTask)
             } catch (err) {
                 return setResponse('ERROR')
             }
         },
         deleteTask(_, {id}) {
             try {
-                const taskIdx = tasks.findIndex(task => task.id === id)
-                tasks = [
-                    ...tasks.slice(0, taskIdx),
-                    ...tasks.slice(taskIdx + 1),
-                ]
-                return setResponse()
+                const delTask = Task.findByIdAndDelete(id)
+                return setResponse('SUCCESS', delTask)
             } catch (err) {
                 return setResponse('ERROR')
             }
@@ -138,6 +100,26 @@ const resolvers = {
             subscribe: () => pubsub.asyncIterator([TASK_ADDED, TASK_EDIT]),
         },
     },
+}
+
+const setResponse = (type, task) => {
+    switch (type) {
+        case 'ERROR': {
+            return {
+                code: 500,
+                success: false,
+                message: 'Something get wrong, try again later',
+            }
+        }
+        case 'SUCCESS':
+        default: {
+            return {
+                code: 200,
+                success: true,
+                task,
+            }
+        }
+    }
 }
 
 module.exports = makeExecutableSchema({
